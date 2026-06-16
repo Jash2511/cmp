@@ -5,6 +5,8 @@ asyncpg==0.31.0
 certifi==2026.5.20
 click==8.4.1
 distro==1.9.0
+dnspython==2.8.0
+email-validator==2.3.0
 fastapi==0.137.0
 groq==1.4.0
 h11==0.16.0
