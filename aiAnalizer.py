@@ -1,10 +1,38 @@
 import os
 import json
-from typing import Dict, Any
+from typing import Dict, Any , List
 from groq import Groq
+from pydantic import BaseModel , Field
+from dotenv import load_dotenv
+
+load_dotenv()
+
+API_KEY = os.getenv("GROQ_API_KEY")
 
 # ==========================================
-# 1. OPTIMIZED PROMPT GENERATOR
+# 1. PYDANTIC SCHEMA DEFINITION (ZOD EQUIVALENT)
+# ==========================================
+class ModerationResult(BaseModel):
+    """
+    Defines the strict structure and type constraints for the LLM output.
+    Pydantic automatically validates these fields upon instantiation.
+    """
+    reasoning: str = Field(
+        description="Brief explanation citing the specific rule, priority level, and conditions matched."
+    )
+    post_category: str = Field(
+        description="The assigned single category. Must be one of: 'safe', 'self-harm', 'hate-speech', 'adult-content'."
+    )
+    confidence_score: float = Field(
+        description="A floating-point confidence score between 0.0 and 1.0."
+    )
+    flagged_keywords: List[str] = Field(
+        default_factory=list,
+        description="An array of specific words or short phrases that triggered the category. Must be empty if category is 'safe'."
+    )
+
+# ==========================================
+# 2. OPTIMIZED PROMPT GENERATOR
 # ==========================================
 def build_moderation_prompt(post_text: str, platform: str, age: str) -> str:
     system_prompt = """Analyze the User Post contextually based on the target platform and age metrics.
@@ -48,7 +76,7 @@ def build_moderation_prompt(post_text: str, platform: str, age: str) -> str:
 
 
 # ==========================================
-# 2. GROQ INFERENCE ENGINE
+# 3. GROQ INFERENCE ENGINE
 # ==========================================
 class GroqModerator:
     def __init__(self, model_id: str = "llama-3.3-70b-versatile"):
@@ -56,12 +84,12 @@ class GroqModerator:
         Initializes the Groq client. Requires GROQ_API_KEY in the environment.
         Recommended models: 'llama-3.3-70b-versatile' (smartest) or 'llama3-8b-8192' (fastest).
         """
-        api_key = ""
+        api_key = API_KEY
         if not api_key:
             raise ValueError("Please set the GROQ_API_KEY environment variable.")
-            
+
         print(f"Initializing Groq Inference using model '{model_id}'...")
-        
+
         self.client = Groq(api_key=api_key)
         self.model_id = model_id
 
@@ -86,14 +114,17 @@ class GroqModerator:
                     }
                 ]
             )
-            
+
             raw_output = response.choices[0].message.content
-            
+
             # Defensive clean up just in case Llama sneaks markdown backticks in
             cleaned_output = raw_output.replace("```json", "").replace("```", "").strip()
-            
-            return json.loads(cleaned_output)
-            
+            validated_data = ModerationResult.model_validate_json(cleaned_output)
+
+            # Returns a clean, verified Python dictionary matching your required types
+            return validated_data.model_dump()
+
+
         except Exception as e:
             return {
                 "reasoning": f"Groq API or Parsing Error: {str(e)}",
@@ -101,46 +132,3 @@ class GroqModerator:
                 "confidence_score": 0.0,
                 "flagged_keywords": []
             }
-
-
-# ==========================================
-# 3. VERIFICATION PIPELINE RUN
-# ==========================================
-if __name__ == "__main__":
-    moderator = GroqModerator()
-
-    test_cases = [
-        {
-            "label": "Minor + Vaping + Dating (Should → self-harm via Priority 1b)",
-            "text": "I bought a cool vape kit today and we're planning a wild dating night.",
-            "platform": "forKids",
-            "age": "below 18"
-        },
-        {
-            "label": "Adult + Vaping + Dating (Should → safe)",
-            "text": "I bought a cool vape kit today and we're planning a wild dating night.",
-            "platform": "notForKids",
-            "age": "above 18"
-        },
-        {
-            "label": "Hate speech (Should → hate-speech via Priority 2)",
-            "text": "People like you are disgusting and should disappear.",
-            "platform": "general",
-            "age": "above 18"
-        },
-        {
-            "label": "Clean post (Should → safe)",
-            "text": "Just finished a 10km run. Feeling amazing!",
-            "platform": "general",
-            "age": "above 18"
-        }
-    ]
-
-    for case in test_cases:
-        print(f"\n--- {case['label']} ---")
-        result = moderator.evaluate_text(
-            text=case["text"],
-            platform=case["platform"],
-            age=case["age"]
-        )
-        print(json.dumps(result, indent=2))
